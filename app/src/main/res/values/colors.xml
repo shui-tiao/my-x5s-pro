@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色主题调色板：深底 + 单一强调色 -->
+    <color name="bg">#0B0D11</color>
+    <color name="surface">#151A21</color>
+    <color name="surface_alt">#1B222C</color>
+    <color name="surface_high">#242E3A</color>
+    <color name="stroke">#202834</color>
+    <color name="divider">#232C38</color>
+    <color name="text_primary">#F2F5F8</color>
+    <color name="text_secondary">#8B96A6</color>
+    <color name="text_tertiary">#5E6979</color>
+    <color name="accent">#4ED8A0</color>
+    <color name="accent_pressed">#3FC18F</color>
+    <color name="accent_dark">#08130F</color>
+    <color name="accent_dim">#1C3A30</color>
+    <color name="warn">#E8B34B</color>
+    <color name="warn_dim">#352B14</color>
+</resources>

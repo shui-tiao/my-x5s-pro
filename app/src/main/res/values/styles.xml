@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 卡片容器 -->
+    <style name="Widget_Earbuds_Card">
+        <item name="android:background">@drawable/bg_card</item>
+    </style>
+
+    <!-- 卡片小标题 -->
+    <style name="Widget_Earbuds_CardTitle">
+        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.08</item>
+    </style>
+
+    <!-- 可选中 chips（EQ / 降噪等级） -->
+    <style name="Widget_Earbuds_Chip">
+        <item name="android:background">@drawable/bg_chip</item>
+        <item name="android:textColor">@color/chip_text</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:paddingLeft">16dp</item>
+        <item name="android:paddingRight">16dp</item>
+        <item name="android:paddingTop">9dp</item>
+        <item name="android:paddingBottom">9dp</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+    </style>
+
+    <!-- ANC 三态分段控件的单元格 -->
+    <style name="Widget_Earbuds_SegmentCell">
+        <item name="android:background">@drawable/bg_segment</item>
+        <item name="android:textColor">@color/segment_content</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:gravity">center</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+    </style>
+
+    <!-- 主操作按钮（横幅上的「连接」） -->
+    <style name="Widget_Earbuds_PrimaryButton">
+        <item name="android:background">@drawable/bg_primary_button</item>
+        <item name="android:textColor">@color/accent_dark</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:paddingLeft">18dp</item>
+        <item name="android:paddingRight">18dp</item>
+        <item name="android:paddingTop">10dp</item>
+        <item name="android:paddingBottom">10dp</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+    </style>
+
+    <!-- 圆形图标按钮（顶栏刷新 / 返回） -->
+    <style name="Widget_Earbuds_IconButton">
+        <item name="android:background">@drawable/bg_icon_button</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+    </style>
+
+    <!-- 设置行标题 / 副标题 -->
+    <style name="Widget_Earbuds_RowTitle">
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">15sp</item>
+    </style>
+
+    <style name="Widget_Earbuds_RowSub">
+        <item name="android:textColor">@color/text_tertiary</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:paddingTop">2dp</item>
+    </style>
+
+    <!-- 设置页 / 关于页正文 -->
+    <style name="Widget_Earbuds_Body">
+        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:lineSpacingMultiplier">1.4</item>
+    </style>
+</resources>

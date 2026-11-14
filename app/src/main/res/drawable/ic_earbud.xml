@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 耳机（单耳，自绘：圆形听筒 + 柄） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,3.5a5.5,5.5 0 1,0 0,11a5.5,5.5 0 1,0 0,-11z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M9.8,13.5h4.4v5.3a2.2,2.2 0 0,1 -4.4,0z" />
+</vector>
