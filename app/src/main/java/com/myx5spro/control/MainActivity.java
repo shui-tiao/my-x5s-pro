@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -22,6 +23,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
@@ -153,11 +155,33 @@ public class MainActivity extends AppCompatActivity {
     private static final String PREFS_NAME = "earbud_prefs";
     private static final String KEY_LAST_ADDRESS = "last_device_address";
     private static final String KEY_AUTO_RESUME = "auto_resume_playback";
+    private static final String KEY_ICON_STYLE = "app_icon_style";
+    private static final String ICON_WHITE_DARK = "white_dark";
+    private static final String ICON_WHITE_LIGHT = "white_light";
+    private static final String ICON_BLACK_LIGHT = "black_light";
+    private static final String ICON_BLACK_DARK = "black_dark";
+    /** 设置页图标选项：配色值、显示名、对应桌面别名，顺序一致。 */
+    private static final String[] ICON_STYLES = {
+            ICON_WHITE_DARK, ICON_WHITE_LIGHT, ICON_BLACK_LIGHT, ICON_BLACK_DARK
+    };
+    private static final String[] ICON_NAMES = {
+            "白色 · 黑底", "白色 · 白底", "黑色 · 白底", "黑色 · 黑底"
+    };
+    private static final String[] ICON_ALIASES = {
+            "com.myx5spro.control.LauncherWhiteDark",
+            "com.myx5spro.control.LauncherWhiteLight",
+            "com.myx5spro.control.LauncherBlackLight",
+            "com.myx5spro.control.LauncherBlackDark"
+    };
     /** 切换 LDAC 前是否在播放音乐；重连成功后按设置决定是否发送播放键。 */
     private boolean resumePlaybackPending;
     private boolean autoResumePlayback;
     private View rowAutoResume;
     private TextView tvAutoResumeState;
+    /** 当前应用图标配色，取值见 ICON_STYLES。 */
+    private String iconStyle;
+    private View[] iconRows;
+    private TextView[] iconLabels;
     private int reconnectAttempts;
     private final Runnable reconnectTask = new Runnable() {
         @Override
@@ -302,6 +326,29 @@ public class MainActivity extends AppCompatActivity {
             appendLog("重连后自动恢复播放: " + (autoResumePlayback ? "开" : "关"));
         });
         renderAutoResume();
+
+        // ---- 设置页：应用图标（四种配色）----
+        String storedIconStyle = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getString(KEY_ICON_STYLE, ICON_WHITE_DARK);
+        iconStyle = normalizeIconStyle(storedIconStyle);
+        int[] iconRowIds = {
+                R.id.row_icon_white_dark, R.id.row_icon_white_light,
+                R.id.row_icon_black_light, R.id.row_icon_black_dark
+        };
+        int[] iconLabelIds = {
+                R.id.tv_icon_white_dark, R.id.tv_icon_white_light,
+                R.id.tv_icon_black_light, R.id.tv_icon_black_dark
+        };
+        iconRows = new View[ICON_STYLES.length];
+        iconLabels = new TextView[ICON_STYLES.length];
+        for (int i = 0; i < ICON_STYLES.length; i++) {
+            final int index = i;
+            iconRows[i] = findViewById(iconRowIds[i]);
+            iconLabels[i] = findViewById(iconLabelIds[i]);
+            iconRows[i].setOnClickListener(v -> applyIconStyle(ICON_STYLES[index]));
+        }
+        syncIconAliasIfNeeded();
+        renderIconStyle();
 
         findViewById(R.id.btn_read_settings).setOnClickListener(v -> readAllSettings());
         findViewById(R.id.btn_probe).setOnClickListener(v -> startProbe());
@@ -913,6 +960,95 @@ public class MainActivity extends AppCompatActivity {
         }
         tvAutoResumeState.setText(autoResumePlayback ? "已开启" : "已关闭");
         tvAutoResumeState.setSelected(autoResumePlayback);
+    }
+
+    /** 兼容旧版只有白色 / 黑色两种图标时保存的偏好值。 */
+    private String normalizeIconStyle(String style) {
+        if ("white".equals(style)) {
+            return ICON_WHITE_DARK;
+        }
+        if ("black".equals(style)) {
+            return ICON_BLACK_LIGHT;
+        }
+        for (String item : ICON_STYLES) {
+            if (item.equals(style)) {
+                return item;
+            }
+        }
+        return ICON_WHITE_DARK;
+    }
+
+    private int iconStyleIndex(String style) {
+        for (int i = 0; i < ICON_STYLES.length; i++) {
+            if (ICON_STYLES[i].equals(style)) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    /** 设置页图标选项的选中态。 */
+    private void renderIconStyle() {
+        if (iconRows == null) {
+            return;
+        }
+        for (int i = 0; i < ICON_STYLES.length; i++) {
+            boolean selected = ICON_STYLES[i].equals(iconStyle);
+            iconRows[i].setSelected(selected);
+            iconLabels[i].setTextColor(ContextCompat.getColor(this,
+                    selected ? R.color.accent : R.color.text_secondary));
+        }
+    }
+
+    /** 升级后 / 偏好与别名状态不一致时，按设置同步一次桌面图标。 */
+    private void syncIconAliasIfNeeded() {
+        PackageManager pm = getPackageManager();
+        int target = iconStyleIndex(iconStyle);
+        for (int i = 0; i < ICON_STYLES.length; i++) {
+            int state = pm.getComponentEnabledSetting(new ComponentName(this, ICON_ALIASES[i]));
+            boolean enabled = state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                    || (state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && i == 0);
+            if (enabled != (i == target)) {
+                setAliasEnabled(pm, ICON_ALIASES[target], true);
+                for (int j = 0; j < ICON_ALIASES.length; j++) {
+                    if (j != target) {
+                        setAliasEnabled(pm, ICON_ALIASES[j], false);
+                    }
+                }
+                return;
+            }
+        }
+    }
+
+    /** 切换桌面图标：先启用目标别名，再停用其余别名，避免桌面出现无图标空档。 */
+    private void applyIconStyle(String style) {
+        style = normalizeIconStyle(style);
+        if (style.equals(iconStyle)) {
+            return;
+        }
+        iconStyle = style;
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putString(KEY_ICON_STYLE, style).apply();
+        renderIconStyle();
+
+        int target = iconStyleIndex(style);
+        PackageManager pm = getPackageManager();
+        setAliasEnabled(pm, ICON_ALIASES[target], true);
+        for (int i = 0; i < ICON_ALIASES.length; i++) {
+            if (i != target) {
+                setAliasEnabled(pm, ICON_ALIASES[i], false);
+            }
+        }
+        Toast.makeText(this, "已切换为" + ICON_NAMES[target] + "图标",
+                Toast.LENGTH_SHORT).show();
+        appendLog("应用图标已切换为" + ICON_NAMES[target]);
+    }
+
+    private void setAliasEnabled(PackageManager pm, String alias, boolean enabled) {
+        pm.setComponentEnabledSetting(new ComponentName(this, alias),
+                enabled ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                        : PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP);
     }
 
     /** 把 service=4 的应答写入状态。 */

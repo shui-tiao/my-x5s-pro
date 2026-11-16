@@ -16,4 +16,7 @@
     <color name="accent_dim">#1C3A30</color>
     <color name="warn">#E8B34B</color>
     <color name="warn_dim">#352B14</color>
+    <!-- 应用图标背景：深色底 / 浅色底 -->
+    <color name="icon_bg_dark">#000000</color>
+    <color name="icon_bg_light">#FFFFFF</color>
 </resources>

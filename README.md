@@ -450,8 +450,8 @@ adb install -r app\build\outputs\apk\release\app-release.apk
 
 | 变体      | 应用名       | 包名                     | 版本名 | debuggable |
 | ------- | --------- | ---------------------- | --- | ---------- |
-| release | 我的X5s Pro | `com.myx5spro.control` | 1.0 | 否          |
-| debug   | 我的X5s Pro | `com.myx5spro.control` | 1.0 | 是          |
+| release | 我的X5s Pro | `com.myx5spro.control` | 1.0.1 | 否          |
+| debug   | 我的X5s Pro | `com.myx5spro.control` | 1.0.1 | 是          |
 
 > release 当前复用 debug 签名密钥（本机无正式发布密钥），可直接 `adb install`；
 > 若安装过旧版 `com.myx5spro.control`，需先卸载（签名相同则可直接覆盖安装）。
