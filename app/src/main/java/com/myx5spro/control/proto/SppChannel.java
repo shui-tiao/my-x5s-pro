@@ -73,9 +73,18 @@ public class SppChannel {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     /** 独立的写线程：readLoop 长期占用唯一的读线程，写入不能共用。 */
     private final ExecutorService sendExecutor = Executors.newSingleThreadExecutor();
+    /** 连接超时看门狗：到点强制关闭仍在阻塞的 socket，让 connect() 抛错返回。 */
+    private final java.util.concurrent.ScheduledExecutorService connectWatchdog =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+    /** 单个 UUID 的连接尝试超时（毫秒）。 */
+    public static final int CONNECT_TIMEOUT_MS = 8000;
     private final Object writeLock = new Object();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
+
+    /** 连接代数：每次 connect()/disconnect() 递增，旧连接的回调一律作废。 */
+    private final java.util.concurrent.atomic.AtomicInteger generation =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     private BluetoothSocket socket;
     private InputStream input;
@@ -93,64 +102,104 @@ public class SppChannel {
 
     @SuppressLint("MissingPermission")
     public void connect(BluetoothDevice device) {
-        disconnect();
-        executor.execute(() -> {
-            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
-            UUID preferred = chooseUuid(device);
-            // 候选顺序：优先设备广播的 UUID，随后依次尝试荣耀 UUID 与标准 SPP
-            List<UUID> candidates = new ArrayList<>();
-            candidates.add(preferred);
-            for (UUID u : new UUID[]{HONOR_SPP_UUID, HONOR_SPP_UUID_B3, SPP_UUID}) {
-                if (!candidates.contains(u)) {
-                    candidates.add(u);
-                }
-            }
+        // 递增代数：使旧连接的回调全部作废，避免过期 onDisconnected 干扰新一轮连接
+        generation.incrementAndGet();
+        disconnectInternal();
+        executor.execute(() -> runConnect(device, generation.get()));
+    }
 
-            IOException lastError = null;
-            for (UUID uuid : candidates) {
+    @SuppressLint("MissingPermission")
+    private void runConnect(BluetoothDevice device, int gen) {
+        BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+        UUID preferred = chooseUuid(device);
+        // 候选顺序：优先设备广播的 UUID，随后依次尝试荣耀 UUID 与标准 SPP
+        List<UUID> candidates = new ArrayList<>();
+        candidates.add(preferred);
+        for (UUID u : new UUID[]{HONOR_SPP_UUID, HONOR_SPP_UUID_B3, SPP_UUID}) {
+            if (!candidates.contains(u)) {
+                candidates.add(u);
+            }
+        }
+
+        IOException lastError = null;
+        for (UUID uuid : candidates) {
+            if (gen != generation.get()) {
+                return; // 已被新一轮连接取代，立即退出
+            }
+            BluetoothSocket s = null;
+            try {
+                log("尝试 UUID " + uuid);
+                if (adapter != null) {
+                    adapter.cancelDiscovery();
+                }
+                s = device.createInsecureRfcommSocketToServiceRecord(uuid);
+                socket = s;
+                final BluetoothSocket attemptSocket = s;
+                // 看门狗：connect() 无自带超时，耳机在系统层已连接但串口无响应时可能长时间阻塞，
+                // 到点强制关闭 socket 让 connect() 抛错返回
+                java.util.concurrent.ScheduledFuture<?> timeout =
+                        connectWatchdog.schedule(() -> {
+                            log("UUID " + uuid + " 连接超时（" + CONNECT_TIMEOUT_MS + "ms），强制中断");
+                            try {
+                                attemptSocket.close();
+                            } catch (IOException ignored) {
+                            }
+                        }, CONNECT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+                boolean connected;
                 try {
-                    log("尝试 UUID " + uuid);
-                    if (adapter != null) {
-                        adapter.cancelDiscovery();
-                    }
-                    socket = device.createInsecureRfcommSocketToServiceRecord(uuid);
-                    socket.connect();
-                    input = socket.getInputStream();
-                    output = socket.getOutputStream();
-                    running = true;
-                    pending.reset();
-                    log("连接成功，使用 UUID " + uuid);
-                    String name = device.getName();
-                    main.post(() -> {
-                        if (listener != null) {
-                            listener.onConnected(name == null ? device.getAddress() : name);
-                        }
-                    });
-                    readLoop();
-                    return;
+                    attemptSocket.connect();
+                    connected = true;
                 } catch (IOException e) {
                     lastError = e;
                     log("UUID " + uuid + " 连接失败: " + e.getMessage());
-                    closeQuietly();
+                    connected = false;
+                } finally {
+                    timeout.cancel(false);
                 }
+                if (!connected) {
+                    closeSocketOnly(s);
+                    continue;
+                }
+                if (gen != generation.get()) {
+                    closeSocketOnly(s);
+                    return; // 连接成功瞬间已被新一轮取代，丢弃
+                }
+                input = s.getInputStream();
+                output = s.getOutputStream();
+                running = true;
+                pending.reset();
+                log("连接成功，使用 UUID " + uuid);
+                String name = device.getName();
+                final String displayName = name == null ? device.getAddress() : name;
+                main.post(() -> {
+                    if (gen == generation.get() && listener != null) {
+                        listener.onConnected(displayName);
+                    }
+                });
+                readLoop(s, gen);
+                return;
+            } catch (IOException e) {
+                lastError = e;
+                log("UUID " + uuid + " 连接失败: " + e.getMessage());
+                closeSocketOnly(s);
             }
+        }
 
-            String reason = lastError == null ? "无可用 UUID" : lastError.getMessage();
-            log("全部 UUID 均连接失败: " + reason);
-            main.post(() -> {
-                if (listener != null) {
-                    listener.onDisconnected(reason);
-                }
-            });
-            closeQuietly();
+        String reason = lastError == null ? "无可用 UUID" : lastError.getMessage();
+        log("全部 UUID 均连接失败: " + reason);
+        main.post(() -> {
+            if (gen == generation.get() && listener != null) {
+                listener.onDisconnected(reason);
+            }
         });
     }
 
-    private void readLoop() {
+    private void readLoop(BluetoothSocket s, int gen) {
         byte[] buf = new byte[512];
         try {
-            while (running) {
-                int n = input.read(buf);
+            InputStream in = s.getInputStream();
+            while (running && gen == generation.get()) {
+                int n = in.read(buf);
                 if (n < 0) {
                     break;
                 }
@@ -169,26 +218,30 @@ public class SppChannel {
                     }
                     if (listener != null) {
                         // 必须在主线程回调，否则调用方更新 UI 会抛 CalledFromWrongThreadException
+                        final byte[] p = payload;
                         main.post(() -> {
-                            if (listener != null) {
-                                listener.onFrame(payload);
+                            if (gen == generation.get() && listener != null) {
+                                listener.onFrame(p);
                             }
                         });
                     }
                 }
             }
         } catch (IOException e) {
-            if (running) {
+            if (running && gen == generation.get()) {
                 log("读取异常: " + e.getMessage());
             }
         } finally {
-            running = false;
-            closeQuietly();
-            main.post(() -> {
-                if (listener != null) {
-                    listener.onDisconnected("连接已断开");
-                }
-            });
+            closeSocketOnly(s);
+            // 只有当前代数的连接断开才通知上层；被新连接取代的旧连接保持沉默
+            if (gen == generation.get()) {
+                running = false;
+                main.post(() -> {
+                    if (gen == generation.get() && listener != null) {
+                        listener.onDisconnected("连接已断开");
+                    }
+                });
+            }
         }
     }
 
@@ -223,6 +276,12 @@ public class SppChannel {
     }
 
     public void disconnect() {
+        // 递增代数：让仍在运行的读循环与连接尝试的回调全部作废
+        generation.incrementAndGet();
+        disconnectInternal();
+    }
+
+    private void disconnectInternal() {
         running = false;
         closeQuietly();
     }
@@ -237,6 +296,22 @@ public class SppChannel {
         socket = null;
         input = null;
         output = null;
+    }
+
+    /** 只关闭指定的 socket；共享字段若已指向别的连接则不动，避免误伤新一轮连接。 */
+    private void closeSocketOnly(BluetoothSocket s) {
+        if (s == null) {
+            return;
+        }
+        try {
+            s.close();
+        } catch (IOException ignored) {
+        }
+        if (socket == s) {
+            socket = null;
+            input = null;
+            output = null;
+        }
     }
 
     private void log(String msg) {

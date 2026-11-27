@@ -1,21 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 深色主题调色板：深底 + 单一强调色 -->
-    <color name="bg">#0B0D11</color>
-    <color name="surface">#151A21</color>
-    <color name="surface_alt">#1B222C</color>
-    <color name="surface_high">#242E3A</color>
-    <color name="stroke">#202834</color>
-    <color name="divider">#232C38</color>
-    <color name="text_primary">#F2F5F8</color>
-    <color name="text_secondary">#8B96A6</color>
-    <color name="text_tertiary">#5E6979</color>
+    <!-- 亮色主题调色板：浅底 + 深色文字 + 单一强调色（深色模式见 values-night） -->
+    <color name="bg">#F3F5F8</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_alt">#ECEFF4</color>
+    <color name="surface_high">#E0E5EC</color>
+    <color name="stroke">#DCE2EA</color>
+    <color name="divider">#E3E8EF</color>
+    <color name="text_primary">#171D26</color>
+    <color name="text_secondary">#5B6673</color>
+    <color name="text_tertiary">#98A2B0</color>
     <color name="accent">#4ED8A0</color>
     <color name="accent_pressed">#3FC18F</color>
     <color name="accent_dark">#08130F</color>
-    <color name="accent_dim">#1C3A30</color>
-    <color name="warn">#E8B34B</color>
-    <color name="warn_dim">#352B14</color>
+    <color name="accent_dim">#D9F2E8</color>
+    <!-- 亮底上的强调色文字：用更深的绿保证对比度（深色模式为亮绿） -->
+    <color name="accent_text">#0E8A62</color>
+    <color name="warn">#B07B1A</color>
+    <color name="warn_dim">#FBF0D9</color>
     <!-- 应用图标背景：深色底 / 浅色底 -->
     <color name="icon_bg_dark">#000000</color>
     <color name="icon_bg_light">#FFFFFF</color>

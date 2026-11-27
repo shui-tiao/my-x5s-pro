@@ -16,6 +16,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
@@ -27,6 +28,7 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatDelegate;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -82,6 +84,8 @@ public class MainActivity extends AppCompatActivity {
     private TextView btnConnect;
     /** 一次性提示（权限缺失/断开原因/待选择设备），非空时覆盖默认未连接文案。 */
     private String bannerMsg;
+    /** 上次横幅渲染的模式+副标题，未变化时不重设视图，避免每帧刷新造成忽明忽暗。 */
+    private String lastBannerKey;
 
     /** 电量三列。 */
     private TextView tvBatLeft;
@@ -145,6 +149,9 @@ public class MainActivity extends AppCompatActivity {
     private boolean handshakeSent;
     private BluetoothDevice target;
     private BroadcastReceiver bondReceiver;
+    /** 系统层（ACL）耳机连接状态：true=已连接 false=已断开 null=未知（按已连接处理）。 */
+    private Boolean systemConnected;
+    private BroadcastReceiver aclReceiver;
 
     /** 断开后自动重连：切换 LDAC 会让耳机重启蓝牙栈、SPP 掉线，需等耳机恢复再重试。 */
     private final android.os.Handler mainHandler =
@@ -156,28 +163,38 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_LAST_ADDRESS = "last_device_address";
     private static final String KEY_AUTO_RESUME = "auto_resume_playback";
     private static final String KEY_ICON_STYLE = "app_icon_style";
+    private static final String KEY_THEME_MODE = "theme_mode";
+    /** 外观主题：跟随系统 / 亮色 / 暗色。 */
+    private static final int THEME_SYSTEM = 0;
+    private static final int THEME_LIGHT = 1;
+    private static final int THEME_DARK = 2;
     private static final String ICON_WHITE_DARK = "white_dark";
     private static final String ICON_WHITE_LIGHT = "white_light";
     private static final String ICON_BLACK_LIGHT = "black_light";
     private static final String ICON_BLACK_DARK = "black_dark";
-    /** 设置页图标选项：配色值、显示名、对应桌面别名，顺序一致。 */
+    /** 设置页图标选项：配色值、显示名、对应桌面别名，顺序一致（左列白底、右列黑底）。 */
     private static final String[] ICON_STYLES = {
-            ICON_WHITE_DARK, ICON_WHITE_LIGHT, ICON_BLACK_LIGHT, ICON_BLACK_DARK
+            ICON_WHITE_LIGHT, ICON_BLACK_LIGHT, ICON_WHITE_DARK, ICON_BLACK_DARK
     };
     private static final String[] ICON_NAMES = {
-            "白色 · 黑底", "白色 · 白底", "黑色 · 白底", "黑色 · 黑底"
+            "白色 · 白底", "黑色 · 白底", "白色 · 黑底", "黑色 · 黑底"
     };
     private static final String[] ICON_ALIASES = {
-            "com.myx5spro.control.LauncherWhiteDark",
             "com.myx5spro.control.LauncherWhiteLight",
             "com.myx5spro.control.LauncherBlackLight",
+            "com.myx5spro.control.LauncherWhiteDark",
             "com.myx5spro.control.LauncherBlackDark"
     };
+    /** 清单里默认启用的别名下标（白色 · 白底），用于同步桌面图标状态。 */
+    private static final int ICON_DEFAULT_INDEX = 0;
     /** 切换 LDAC 前是否在播放音乐；重连成功后按设置决定是否发送播放键。 */
     private boolean resumePlaybackPending;
     private boolean autoResumePlayback;
     private View rowAutoResume;
     private TextView tvAutoResumeState;
+    /** 外观主题设置行。 */
+    private TextView tvThemeModeState;
+    private int themeMode = THEME_SYSTEM;
     /** 当前应用图标配色，取值见 ICON_STYLES。 */
     private String iconStyle;
     private View[] iconRows;
@@ -212,6 +229,10 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // 在加载布局前应用已保存的主题，避免启动瞬间闪一下错误的配色
+        themeMode = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getInt(KEY_THEME_MODE, THEME_SYSTEM);
+        applyNightMode(themeMode);
         setContentView(R.layout.activity_main);
         // 让根容器先持有焦点，避免 EditText 自动弹出键盘挡住日志
         View root = findViewById(android.R.id.content);
@@ -327,17 +348,27 @@ public class MainActivity extends AppCompatActivity {
         });
         renderAutoResume();
 
+        // ---- 设置页：外观主题（跟随系统 / 亮色 / 暗色）----
+        tvThemeModeState = findViewById(R.id.tv_theme_mode_state);
+        findViewById(R.id.row_theme_mode).setOnClickListener(v ->
+                showChoice("深色模式",
+                        new CharSequence[]{"跟随系统", "亮色", "暗色"},
+                        new int[]{THEME_SYSTEM, THEME_LIGHT, THEME_DARK},
+                        themeMode,
+                        this::setThemeMode));
+        renderThemeMode();
+
         // ---- 设置页：应用图标（四种配色）----
         String storedIconStyle = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getString(KEY_ICON_STYLE, ICON_WHITE_DARK);
+                .getString(KEY_ICON_STYLE, ICON_WHITE_LIGHT);
         iconStyle = normalizeIconStyle(storedIconStyle);
         int[] iconRowIds = {
-                R.id.row_icon_white_dark, R.id.row_icon_white_light,
-                R.id.row_icon_black_light, R.id.row_icon_black_dark
+                R.id.row_icon_white_light, R.id.row_icon_black_light,
+                R.id.row_icon_white_dark, R.id.row_icon_black_dark
         };
         int[] iconLabelIds = {
-                R.id.tv_icon_white_dark, R.id.tv_icon_white_light,
-                R.id.tv_icon_black_light, R.id.tv_icon_black_dark
+                R.id.tv_icon_white_light, R.id.tv_icon_black_light,
+                R.id.tv_icon_white_dark, R.id.tv_icon_black_dark
         };
         iconRows = new View[ICON_STYLES.length];
         iconLabels = new TextView[ICON_STYLES.length];
@@ -399,6 +430,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+        registerAclReceiver();
         showPage(PAGE_MAIN);
         updateBanner();
 
@@ -460,40 +492,66 @@ public class MainActivity extends AppCompatActivity {
 
     /**
      * 刷新横幅：已连接（绿）/ 连接中（黄）/ 提示（黄）/ 未连接（灰）。
+     * 每帧都会调用：状态与文案都没变时直接返回，不重设背景/图标/文字，
+     * 避免读取设置期间连续刷新造成忽明忽暗。
      */
     private void updateBanner() {
+        String key;
+        String sub;
+        int connectBtnVisibility;
         if (channel.isConnected()) {
-            banner.setBackgroundResource(R.drawable.bg_banner_ok);
-            ivBannerIcon.setImageResource(R.drawable.ic_bluetooth);
-            ivBannerIcon.setColorFilter(ContextCompat.getColor(this, R.color.accent));
-            tvBannerTitle.setText("已连接");
-            tvBannerSub.setText(state.deviceName != null ? state.deviceName : "耳机");
-            btnConnect.setVisibility(View.GONE);
+            key = "ok";
+            sub = state.deviceName != null ? state.deviceName : "耳机";
+            connectBtnVisibility = View.GONE;
+        } else if (connecting) {
+            key = "connecting";
+            sub = target != null ? target.getAddress() : "请稍候";
+            connectBtnVisibility = View.GONE;
+        } else if (bannerMsg != null) {
+            key = "msg:" + bannerMsg;
+            sub = "点击「连接」重试";
+            connectBtnVisibility = View.VISIBLE;
+        } else {
+            key = "off";
+            sub = "点击「连接」选择已配对的耳机";
+            connectBtnVisibility = View.VISIBLE;
+        }
+        String fullKey = key + "|" + sub;
+        if (fullKey.equals(lastBannerKey)) {
             return;
         }
-        if (connecting) {
-            banner.setBackgroundResource(R.drawable.bg_banner_warn);
-            ivBannerIcon.setImageResource(R.drawable.ic_bluetooth);
-            ivBannerIcon.setColorFilter(ContextCompat.getColor(this, R.color.warn));
-            tvBannerTitle.setText("正在连接…");
-            tvBannerSub.setText(target != null ? target.getAddress() : "请稍候");
-            btnConnect.setVisibility(View.GONE);
-            return;
+        lastBannerKey = fullKey;
+        btnConnect.setVisibility(connectBtnVisibility);
+        switch (key) {
+            case "ok":
+                banner.setBackgroundResource(R.drawable.bg_banner_ok);
+                ivBannerIcon.setImageResource(R.drawable.ic_bluetooth);
+                ivBannerIcon.setColorFilter(ContextCompat.getColor(this, R.color.accent));
+                tvBannerTitle.setText("已连接");
+                tvBannerSub.setText(sub);
+                break;
+            case "connecting":
+                banner.setBackgroundResource(R.drawable.bg_banner_warn);
+                ivBannerIcon.setImageResource(R.drawable.ic_bluetooth);
+                ivBannerIcon.setColorFilter(ContextCompat.getColor(this, R.color.warn));
+                tvBannerTitle.setText("正在连接…");
+                tvBannerSub.setText(sub);
+                break;
+            case "off":
+                banner.setBackgroundResource(R.drawable.bg_banner_off);
+                ivBannerIcon.setImageResource(R.drawable.ic_bluetooth);
+                ivBannerIcon.setColorFilter(ContextCompat.getColor(this, R.color.text_secondary));
+                tvBannerTitle.setText("未连接耳机");
+                tvBannerSub.setText(sub);
+                break;
+            default:
+                banner.setBackgroundResource(R.drawable.bg_banner_warn);
+                ivBannerIcon.setImageResource(R.drawable.ic_info);
+                ivBannerIcon.setColorFilter(ContextCompat.getColor(this, R.color.warn));
+                tvBannerTitle.setText(bannerMsg);
+                tvBannerSub.setText(sub);
+                break;
         }
-        btnConnect.setVisibility(View.VISIBLE);
-        if (bannerMsg != null) {
-            banner.setBackgroundResource(R.drawable.bg_banner_warn);
-            ivBannerIcon.setImageResource(R.drawable.ic_info);
-            ivBannerIcon.setColorFilter(ContextCompat.getColor(this, R.color.warn));
-            tvBannerTitle.setText(bannerMsg);
-            tvBannerSub.setText("点击「连接」重试");
-            return;
-        }
-        banner.setBackgroundResource(R.drawable.bg_banner_off);
-        ivBannerIcon.setImageResource(R.drawable.ic_bluetooth);
-        ivBannerIcon.setColorFilter(ContextCompat.getColor(this, R.color.text_secondary));
-        tvBannerTitle.setText("未连接耳机");
-        tvBannerSub.setText("点击「连接」选择已配对的耳机");
     }
 
     // ------------------------------------------------------------ 权限
@@ -639,6 +697,7 @@ public class MainActivity extends AppCompatActivity {
         // 已知是哪副耳机就直接重试，只有从未选过设备时才让用户选择
         BluetoothDevice d = target != null ? target : rememberedDevice();
         if (d != null) {
+            reconnectAttempts = 0; // 手动连接视为全新一轮重试
             startConnect(d);
             return;
         }
@@ -646,8 +705,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 断开后自动重连调度：按 3s 间隔重试最多 10 次，期间横幅显示进度；
-     * 全部失败才转手动连接（耳机可能已关机/离线）。
+     * 断开后自动重连调度：系统层仍连接耳机时不设上限、按退避间隔持续重试
+     * （串口可能被智慧空间临时占用，等它释放即可连上）；
+     * 系统层也断开（耳机真的离线）才按 3s × 10 次有限重试，全部失败转手动连接。
      */
     private void scheduleAutoReconnect(String reason) {
         mainHandler.removeCallbacks(reconnectTask);
@@ -656,7 +716,8 @@ public class MainActivity extends AppCompatActivity {
             updateUi();
             return;
         }
-        if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+        boolean systemOnline = systemConnected == null || systemConnected;
+        if (!systemOnline && reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
             reconnectAttempts = 0;
             bannerMsg = "自动重连失败（" + reason + "），请确认耳机开机并在附近后点「连接」";
             updateUi();
@@ -664,12 +725,20 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         reconnectAttempts++;
-        bannerMsg = "耳机已断开（" + reason + "），自动重连中 "
-                + reconnectAttempts + "/" + RECONNECT_MAX_ATTEMPTS;
+        // 退避：前 3 次 3s，随后 8s，再往后 15s，避免长时间空转
+        long delay = reconnectAttempts <= 3 ? RECONNECT_DELAY_MS
+                : reconnectAttempts <= 6 ? 8000L : 15000L;
+        if (systemOnline) {
+            bannerMsg = "耳机已连接（系统），串口通道暂不可用（可能被智慧空间占用），持续重试中（第 "
+                    + reconnectAttempts + " 次）";
+        } else {
+            bannerMsg = "耳机已断开（" + reason + "），自动重连中 "
+                    + reconnectAttempts + "/" + RECONNECT_MAX_ATTEMPTS;
+        }
         updateUi();
-        appendLog("耳机断开（" + reason + "），" + (RECONNECT_DELAY_MS / 1000) + "s 后重连（第 "
+        appendLog("耳机断开（" + reason + "），" + (delay / 1000) + "s 后重连（第 "
                 + reconnectAttempts + " 次）");
-        mainHandler.postDelayed(reconnectTask, RECONNECT_DELAY_MS);
+        mainHandler.postDelayed(reconnectTask, delay);
     }
 
     private void startConnect(BluetoothDevice device) {
@@ -718,6 +787,52 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * 监听系统层（ACL）耳机连接状态：串口连不上但系统仍连接时持续重试，
+     * 系统断开才按有限次重试；系统刚连上而串口未连时立即触发一轮重连。
+     */
+    @SuppressLint("MissingPermission")
+    private void registerAclReceiver() {
+        unregisterAclReceiver();
+        IntentFilter f = new IntentFilter();
+        f.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
+        f.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
+        aclReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                BluetoothDevice d = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                if (d == null || target == null
+                        || !target.getAddress().equals(d.getAddress())) {
+                    return;
+                }
+                boolean connected = BluetoothDevice.ACTION_ACL_CONNECTED.equals(intent.getAction());
+                systemConnected = connected;
+                appendLog(connected ? "系统已连接耳机" : "系统已断开耳机");
+                if (connected && !channel.isConnected() && !connecting) {
+                    // 系统刚连上而串口还没连上：立即触发一轮重连
+                    mainHandler.removeCallbacks(reconnectTask);
+                    mainHandler.post(reconnectTask);
+                }
+                updateUi();
+            }
+        };
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(aclReceiver, f, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(aclReceiver, f);
+        }
+    }
+
+    private void unregisterAclReceiver() {
+        if (aclReceiver != null) {
+            try {
+                unregisterReceiver(aclReceiver);
+            } catch (IllegalArgumentException ignored) {
+            }
+            aclReceiver = null;
+        }
+    }
+
     // ------------------------------------------------------------ 通信
 
     private void handleFrame(byte[] payload) {
@@ -744,6 +859,13 @@ public class MainActivity extends AppCompatActivity {
         CommandCatalog.parseIdentity(payload, state, diag);
         // 属性块：EQ / LDAC / 空间环绕声都走这里（2B 6D/6E、2B 1A/1B、2B 75/76 在本固件上无应答）
         EarbudCommands.Property prop = EarbudCommands.parseProperty(payload);
+        if (prop != null && prop.value < 0) {
+            // 兜底扫描在 value TLV 缺失时会给 -1（如查询帧被回显）；
+            // 这种帧不能写入状态，否则会把已读到的值冲回「未读取」造成界面忽明忽暗
+            diag.append("属性帧缺 value，忽略（service=").append(prop.serviceIndex)
+                    .append(" prop=").append(prop.propertyIndex).append("）\n");
+            prop = null;
+        }
         if (prop != null) {
             if (prop.serviceIndex == EarbudCommands.EQ_SERVICE_INDEX
                     && prop.propertyIndex == EarbudCommands.EQ_PROPERTY_INDEX) {
@@ -962,10 +1084,46 @@ public class MainActivity extends AppCompatActivity {
         tvAutoResumeState.setSelected(autoResumePlayback);
     }
 
+    /** 设置外观主题：保存偏好并立即生效（界面会自动重建）。 */
+    private void setThemeMode(int mode) {
+        if (mode == themeMode) {
+            return;
+        }
+        themeMode = mode;
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putInt(KEY_THEME_MODE, mode).apply();
+        applyNightMode(mode);
+        renderThemeMode();
+        appendLog("深色模式: "
+                + (mode == THEME_LIGHT ? "亮色" : mode == THEME_DARK ? "暗色" : "跟随系统"));
+    }
+
+    /** 把主题偏好映射到 AppCompat 的夜间模式。 */
+    private static void applyNightMode(int mode) {
+        if (mode == THEME_LIGHT) {
+            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
+        } else if (mode == THEME_DARK) {
+            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES);
+        } else {
+            AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM);
+        }
+    }
+
+    /** 外观主题设置行的当前值文案。 */
+    private void renderThemeMode() {
+        if (tvThemeModeState == null) {
+            return;
+        }
+        String text = themeMode == THEME_LIGHT ? "亮色"
+                : themeMode == THEME_DARK ? "暗色" : "跟随系统";
+        tvThemeModeState.setText(text);
+        tvThemeModeState.setSelected(themeMode != THEME_SYSTEM);
+    }
+
     /** 兼容旧版只有白色 / 黑色两种图标时保存的偏好值。 */
     private String normalizeIconStyle(String style) {
         if ("white".equals(style)) {
-            return ICON_WHITE_DARK;
+            return ICON_WHITE_LIGHT;
         }
         if ("black".equals(style)) {
             return ICON_BLACK_LIGHT;
@@ -975,7 +1133,7 @@ public class MainActivity extends AppCompatActivity {
                 return item;
             }
         }
-        return ICON_WHITE_DARK;
+        return ICON_WHITE_LIGHT;
     }
 
     private int iconStyleIndex(String style) {
@@ -984,7 +1142,7 @@ public class MainActivity extends AppCompatActivity {
                 return i;
             }
         }
-        return 0;
+        return ICON_DEFAULT_INDEX;
     }
 
     /** 设置页图标选项的选中态。 */
@@ -996,7 +1154,7 @@ public class MainActivity extends AppCompatActivity {
             boolean selected = ICON_STYLES[i].equals(iconStyle);
             iconRows[i].setSelected(selected);
             iconLabels[i].setTextColor(ContextCompat.getColor(this,
-                    selected ? R.color.accent : R.color.text_secondary));
+                    selected ? R.color.accent_text : R.color.text_secondary));
         }
     }
 
@@ -1007,7 +1165,8 @@ public class MainActivity extends AppCompatActivity {
         for (int i = 0; i < ICON_STYLES.length; i++) {
             int state = pm.getComponentEnabledSetting(new ComponentName(this, ICON_ALIASES[i]));
             boolean enabled = state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-                    || (state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && i == 0);
+                    || (state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+                    && i == ICON_DEFAULT_INDEX);
             if (enabled != (i == target)) {
                 setAliasEnabled(pm, ICON_ALIASES[target], true);
                 for (int j = 0; j < ICON_ALIASES.length; j++) {
@@ -1335,13 +1494,13 @@ public class MainActivity extends AppCompatActivity {
         chipLevelMedium.setSelected(state.ancLevel == EarbudCommands.LEVEL_MEDIUM);
         chipLevelDeep.setSelected(state.ancLevel == EarbudCommands.LEVEL_DEEP);
         if (ancHintMsg != null) {
-            tvAncHint.setText(ancHintMsg);
+            setTextIfChanged(tvAncHint, ancHintMsg);
         } else if (pendingAnc >= 0) {
-            tvAncHint.setText("切换中…");
+            setTextIfChanged(tvAncHint, "切换中…");
         } else if (!channel.isConnected()) {
-            tvAncHint.setText("连接耳机后可用");
+            setTextIfChanged(tvAncHint, "连接耳机后可用");
         } else {
-            tvAncHint.setText("");
+            setTextIfChanged(tvAncHint, "");
         }
 
         // 音效
@@ -1351,24 +1510,24 @@ public class MainActivity extends AppCompatActivity {
         setToggle(tvLdacState, state.ldacOn);
         if (state.ldacOn == EarbudCommands.SWITCH_ON) {
             // 与官方一致：LDAC 与空间音频互斥，开 LDAC 时空间音频不可用
-            tvAudio3dState.setText("LDAC 下不可用");
+            setTextWithReveal(tvAudio3dState, "LDAC 下不可用");
             tvAudio3dState.setSelected(false);
         } else {
             setToggle(tvAudio3dState, state.audio3d);
         }
 
         // 快捷操作（芯片文本 = 当前设置）
-        chipTwiceL.setText(state.pinchTwiceL < 0 ? "未读取"
+        setTextWithReveal(chipTwiceL, state.pinchTwiceL < 0 ? "未读取"
                 : EarbudState.pinchTwiceText(state.pinchTwiceL));
-        chipTwiceR.setText(state.pinchTwiceR < 0 ? "未读取"
+        setTextWithReveal(chipTwiceR, state.pinchTwiceR < 0 ? "未读取"
                 : EarbudState.pinchTwiceText(state.pinchTwiceR));
-        chipThreeL.setText(state.pinchThreeL < 0 ? "未读取"
+        setTextWithReveal(chipThreeL, state.pinchThreeL < 0 ? "未读取"
                 : EarbudState.pinchThreeText(state.pinchThreeL));
-        chipThreeR.setText(state.pinchThreeR < 0 ? "未读取"
+        setTextWithReveal(chipThreeR, state.pinchThreeR < 0 ? "未读取"
                 : EarbudState.pinchThreeText(state.pinchThreeR));
-        chipHold.setText(state.holdNormal < 0 ? "未读取"
+        setTextWithReveal(chipHold, state.holdNormal < 0 ? "未读取"
                 : EarbudState.holdText(state.holdNormal));
-        chipCycle.setText(holdCycleShort(state.holdCycleL >= 0
+        setTextWithReveal(chipCycle, holdCycleShort(state.holdCycleL >= 0
                 ? state.holdCycleL : state.holdCycleR));
 
         // 设置页：设备信息
@@ -1387,10 +1546,10 @@ public class MainActivity extends AppCompatActivity {
         if (state.rawTlvs != null) {
             info.append("原始 TLV:\n").append(state.rawTlvs);
         }
-        tvInfo.setText(info.length() == 0 ? "暂无数据" : info.toString());
+        setTextIfChanged(tvInfo, info.length() == 0 ? "暂无数据" : info.toString());
         String s = state.settingsText();
         if (tvSettings != null && s.length() > 0) {
-            tvSettings.setText(s);
+            setTextIfChanged(tvSettings, s);
         }
     }
 
@@ -1398,24 +1557,60 @@ public class MainActivity extends AppCompatActivity {
     private void renderBattery(TextView tv, ProgressBar bar, TextView stateTv,
                                int value, boolean charging) {
         if (value < 0) {
-            tv.setText("--");
+            setTextIfChanged(tv, "--");
             bar.setProgress(0);
-            stateTv.setText("");
+            setTextIfChanged(stateTv, "");
             return;
         }
-        tv.setText(value + "%");
+        setTextIfChanged(tv, value + "%");
         bar.setProgress(value);
-        stateTv.setText(charging ? "充电中" : "");
+        setTextIfChanged(stateTv, charging ? "充电中" : "");
+    }
+
+    /** 仅在文本确实变化时写入，避免每帧重复 setText 触发重排造成闪烁。 */
+    private static void setTextIfChanged(TextView tv, CharSequence text) {
+        if (text == null) {
+            text = "";
+        }
+        if (!text.equals(tv.getText() == null ? "" : tv.getText().toString())) {
+            tv.setText(text);
+        }
+    }
+
+    /**
+     * 设置项文案写入：从「未读取」变成真实值时播放一次渐显动效
+     * （淡入 + 轻微放大，320ms），其余情况静默更新。
+     */
+    private void setTextWithReveal(TextView tv, CharSequence text) {
+        if (text == null) {
+            text = "";
+        }
+        CharSequence old = tv.getText() == null ? "" : tv.getText().toString();
+        if (text.equals(old)) {
+            return;
+        }
+        boolean wasUnread = "未读取".contentEquals(old);
+        tv.setText(text);
+        if (wasUnread && !"未读取".contentEquals(text)) {
+            tv.animate().cancel();
+            tv.setAlpha(0f);
+            tv.setScaleX(0.94f);
+            tv.setScaleY(0.94f);
+            tv.animate().alpha(1f).scaleX(1f).scaleY(1f)
+                    .setDuration(320L)
+                    .setInterpolator(new DecelerateInterpolator(1.6f))
+                    .start();
+        }
     }
 
     /** 开关行状态文案：协议里 1=开、0=关、-1=未读取。 */
     private void setToggle(TextView tv, int v) {
         if (v < 0) {
-            tv.setText("未读取");
+            setTextWithReveal(tv, "未读取");
             tv.setSelected(false);
         } else {
             boolean on = v == EarbudCommands.SWITCH_ON;
-            tv.setText(on ? "已开启" : "已关闭");
+            setTextWithReveal(tv, on ? "已开启" : "已关闭");
             tv.setSelected(on);
         }
     }
@@ -1473,5 +1668,6 @@ public class MainActivity extends AppCompatActivity {
         mainHandler.removeCallbacks(pendingAncTimeout);
         channel.disconnect();
         unregisterBondReceiver();
+        unregisterAclReceiver();
     }
 }
